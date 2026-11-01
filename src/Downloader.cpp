@@ -17,20 +17,45 @@
 #include "Downloader.h"
 #include "UrlParser.h"
 
+#include <cctype>
+
 #include <asio/ssl/context.hpp>
 #include <asio/ssl/stream.hpp>
-#include <asio/ssl/rfc2818_verification.hpp>
 
 namespace ssl = asio::ssl;
 
+namespace {
+
+// value of a header line if its name matches "lowercaseName" (including ':'), else empty
+std::string headerValue(const std::string &headerLine, std::string_view lowercaseName) {
+    if (headerLine.size() < lowercaseName.size()) return {};
+
+    for (std::size_t i = 0; i < lowercaseName.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(headerLine[i])) != lowercaseName[i]) return {};
+    }
+
+    // trim surrounding spaces and the trailing '\r' left by getline()
+    const auto begin = headerLine.find_first_not_of(" \t", lowercaseName.size());
+    if (begin == std::string::npos) return {};
+    const auto end = headerLine.find_last_not_of(" \t\r");
+
+    return headerLine.substr(begin, end - begin + 1);
+}
+
+}  // namespace
+
 template<>
-Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::HTTPS>(const UrlParser &url, bool head, asio::io_service &io_service, tcp::resolver::iterator resolvedEndpoints) {
+Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::HTTPS>(const UrlParser &url, bool head, asio::io_context &io_context, const tcp::resolver::results_type &resolvedEndpoints) {
     // setup SSL
-    ssl::context ssl_ctx(ssl::context::sslv23);
+    ssl::context ssl_ctx(ssl::context::tls_client);
     ssl_ctx.set_default_verify_paths();
 
     // initiate
-    asio::ssl::stream<tcp::socket> ssl_sock(io_service, ssl_ctx);
+    asio::ssl::stream<tcp::socket> ssl_sock(io_context, ssl_ctx);
+
+    // Server Name Indication, required by most shared hosts / CDNs to present the right certificate
+    const auto host = url.host();
+    SSL_set_tlsext_host_name(ssl_sock.native_handle(), host.c_str());
 
     // Connect to host
     asio::connect(ssl_sock.lowest_layer(), resolvedEndpoints);
@@ -39,7 +64,7 @@ Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::
         // Perform SSL handshake and verify the remote host's certificate.
         // TODO(amphaal) might need to implement https://stackoverflow.com/questions/39772878/reliable-way-to-get-root-ca-certificates-on-windows
         // ssl_sock.set_verify_mode(ssl::verify_peer);
-        // ssl_sock.set_verify_callback(ssl::rfc2818_verification(serverName));
+        // ssl_sock.set_verify_callback(ssl::host_name_verification(host));
 
     // no check of certificates
     ssl_sock.set_verify_mode(ssl::verify_none);
@@ -50,17 +75,12 @@ Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::
 }
 
 template<>
-Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::HTTP>(const UrlParser &url, bool head, asio::io_service &io_service, tcp::resolver::iterator resolvedEndpoints) {
+Downloader::Response Downloader::_dumbGetFromScheme<Downloader::HandledSchemes::HTTP>(const UrlParser &url, bool head, asio::io_context &io_context, const tcp::resolver::results_type &resolvedEndpoints) {
     // initiate
-    tcp::socket socket(io_service);
+    tcp::socket socket(io_context);
 
     // Try each endpoint until we successfully establish a connection.
-    asio::error_code error;
-    tcp::resolver::iterator end;
-    do {
-        socket.close();
-        socket.connect(*resolvedEndpoints++, error);
-    } while (error.value() && resolvedEndpoints != end);
+    asio::connect(socket, resolvedEndpoints);
 
     //
     return _dumbGet(socket, url, head);
@@ -129,11 +149,9 @@ Downloader::Response Downloader::_dumbGet(Sock& sock, const UrlParser &url, bool
                 headerTmp.find("Content-Length") != std::string::npos;
         }
 
-        // find redirection url
-        if (status_code == 302 && redirectUrl.empty()) {
-            auto found = headerTmp.find(LocationTag);
-            if (found == std::string::npos) continue;
-            redirectUrl = headerTmp.substr(found + LocationTag.size());
+        // find redirection url, on any redirection status
+        if (status_code >= 300 && status_code < 400 && redirectUrl.empty()) {
+            redirectUrl = headerValue(headerTmp, LocationTag);
         }
     }
 
@@ -173,23 +191,40 @@ Downloader::Response Downloader::_dumbGet(Sock& sock, const UrlParser &url, bool
 }
 
 Downloader::Response Downloader::dumbGet(const std::string &downloadUrl, bool head) {
+    auto url = downloadUrl;
+
+    for (int redirections = 0;; ++redirections) {
+        auto response = _dumbGetOnce(url, head);
+        if (response.redirectUrl.empty() || redirections == MaxRedirections) return response;
+
+        // relative location
+        if (response.redirectUrl.front() == '/') {
+            const UrlParser current(url);
+            response.redirectUrl = current.scheme() + "://" + current.host() + response.redirectUrl;
+        }
+
+        spdlog::debug("StupidHTTPDownloader : Redirected to [{}]", response.redirectUrl);
+        url = response.redirectUrl;
+    }
+}
+
+Downloader::Response Downloader::_dumbGetOnce(const std::string &downloadUrl, bool head) {
     // decompose url
     UrlParser url_decomposer(downloadUrl);
     auto serverName = url_decomposer.host();
     auto scheme = url_decomposer.scheme();
 
     // setup service
-    asio::io_service io_service;
+    asio::io_context io_context;
 
     // resolve IP
-    tcp::resolver resolver(io_service);
-    tcp::resolver::query query(serverName, scheme);
-    auto endpoint_iterator = resolver.resolve(query);
+    tcp::resolver resolver(io_context);
+    const auto endpoints = resolver.resolve(serverName, scheme);
 
     // switch HTTP / HTTPS
     if (url_decomposer.isHTTPS()) {
-        return _dumbGetFromScheme<HandledSchemes::HTTPS>(url_decomposer, head, io_service, endpoint_iterator);
+        return _dumbGetFromScheme<HandledSchemes::HTTPS>(url_decomposer, head, io_context, endpoints);
     } else {
-        return _dumbGetFromScheme<HandledSchemes::HTTP> (url_decomposer, head, io_service, endpoint_iterator);
+        return _dumbGetFromScheme<HandledSchemes::HTTP> (url_decomposer, head, io_context, endpoints);
     }
 }

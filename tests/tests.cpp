@@ -12,14 +12,12 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 // GNU General Public License for more details.
 
-#define CATCH_CONFIG_MAIN
-
 #include <string>
 
 #include <StupidHTTPDownloader/Downloader.h>
 #include <StupidHTTPDownloader/UrlParser.h>
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("Download HTTPS with missing PATH initiator", "[download]") {
     std::string testAddr {"https://api.ipify.org?format=json"};
@@ -53,6 +51,16 @@ TEST_CASE("Download HTTP", "[download]") {
     REQUIRE(response.statusCode == 200);
     REQUIRE(response.messageBody.size());
     REQUIRE(response.redirectUrl.empty());
+}
+
+TEST_CASE("Follow permanent redirection", "[download]") {
+    // repository owner was renamed : GitHub API answers 301 with a Location header
+    std::string testAddr {"https://api.github.com/repos/Amphaal/StupidHTTPDownloader"};
+
+    auto response = Downloader::dumbGet(testAddr);
+    REQUIRE(response.statusCode == 200);
+    REQUIRE(response.redirectUrl.empty());
+    REQUIRE(response.messageBody.find("\"full_name\"") != std::string::npos);
 }
 
 TEST_CASE("No detailed path", "[url_parsing]") {

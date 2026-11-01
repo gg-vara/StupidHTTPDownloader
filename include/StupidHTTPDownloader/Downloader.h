@@ -33,7 +33,10 @@ class Downloader {
         std::vector<std::string> headers;
     };
 
+    // follows redirections (3xx with a Location header), up to "MaxRedirections" times
     static Response dumbGet(const std::string &downloadUrl, bool head = false);
+
+    static constexpr int MaxRedirections = 5;
 
  private:
     enum class HandledSchemes {
@@ -41,11 +44,14 @@ class Downloader {
         HTTPS
     };
 
+    static Response _dumbGetOnce(const std::string &downloadUrl, bool head);
+
     template<HandledSchemes scheme>
-    static Response _dumbGetFromScheme(const UrlParser &url, bool head, asio::io_service &io_service, tcp::resolver::iterator resolvedEndpoints);
+    static Response _dumbGetFromScheme(const UrlParser &url, bool head, asio::io_context &io_context, const tcp::resolver::results_type &resolvedEndpoints);
 
     template<typename Sock>
     static Response _dumbGet(Sock& sock, const UrlParser &url, bool head);
 
-    static constexpr std::string_view LocationTag = "Location: ";
+    // header names are case-insensitive
+    static constexpr std::string_view LocationTag = "location:";
 };
