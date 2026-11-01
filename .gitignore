@@ -33,4 +33,5 @@
 
 
 /build/
+/build_clang64/
 .DS_Store
