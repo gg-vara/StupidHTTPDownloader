@@ -11,7 +11,7 @@
             "program": "${workspaceFolder}/build/tests/SHTTPD_tests",
             "windows": {
                 "program": "${workspaceFolder}/build/tests/SHTTPD_tests.exe",
-                "miDebuggerPath": "${env:MINGW64_ROOT}\\bin\\gdb.exe",
+                "miDebuggerPath": "${env:MSYS2_ROOT}\\clang64\\bin\\gdb.exe",
                 "MIMode": "gdb",
                 "setupCommands": [
                     {

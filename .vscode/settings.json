@@ -16,13 +16,13 @@
             "source": "Git Bash"
         },
         "Msys2 Shell" : {
-            "path" : "${env:MINGW64_ROOT}\\..\\usr\\bin\\bash.exe",
+            "path" : "${env:MSYS2_ROOT}\\usr\\bin\\bash.exe",
             "args": [        
                 "--login",
                 "-i"
             ],
             "env": {
-                "MSYSTEM": "MINGW64",
+                "MSYSTEM": "CLANG64",
                 "MSYS2_PATH_TYPE": "inherit",
                 "CHERE_INVOKING": "1",
                 "MSVSCODE": "1"
